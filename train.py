@@ -6,6 +6,7 @@ import time
 import argparse
 import json
 import torch
+from datetime import datetime
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DistributedSampler, DataLoader
@@ -19,6 +20,19 @@ from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator,
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, save_checkpoint
 
 torch.backends.cudnn.benchmark = True
+
+def strshape(item):
+    txt=""
+    for it in item.shape:
+        txt += ", {}".format(it)
+    return "[{}]".format(txt[2:])
+
+def print_shape(x, y, y_mel, y_g_hat, y_g_hat_mel):
+    print("-----------------------------------------------------------------------------------")
+    print("x\t\ty\t\ty_mel\t\ty_g_hat\t\ty_g_hat_mel", flush=True)
+    print("{}\t{}\t{}\t{}\t{}".format(strshape(x), strshape(y), strshape(y_mel), strshape(y_g_hat), strshape(y_g_hat_mel)), flush=True)
+    print("-----------------------------------------------------------------------------------")
+    
 
 
 def train(rank, a, h):
@@ -96,8 +110,14 @@ def train(rank, a, h):
                                        batch_size=1,
                                        pin_memory=True,
                                        drop_last=True)
-
-        sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'))
+        
+        runname=datetime.today().strftime("HiFiGan_%d%b%Y_%H%M%S")
+        if a.logging_dir is not None:
+            log_dir = os.path.join(a.logging_dir, runname)
+        else:
+            log_dir = os.path.join(a.checkpoint_path, 'logs', runname)
+        os.makedirs(log_dir, exist_ok=True)
+        sw = SummaryWriter(log_dir)
 
     generator.train()
     mpd.train()
@@ -123,6 +143,9 @@ def train(rank, a, h):
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
 
+            if rank == 0 and i == 0 and epoch == 0:
+                print_shape(x, y, y_mel, y_g_hat, y_g_hat_mel)
+            
             optim_d.zero_grad()
 
             # MPD
@@ -227,21 +250,23 @@ def train(rank, a, h):
 def main():
     print('Initializing Training Process..')
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser("train HiFi Gan - set gpu count in config file")
 
     parser.add_argument('--group_name', default=None)
-    parser.add_argument('--input_wavs_dir', default='LJSpeech-1.1/wavs')
+    parser.add_argument('--input_wavs_dir', required=True) # default='LJSpeech-1.1/wavs')
     parser.add_argument('--input_mels_dir', default='ft_dataset')
     parser.add_argument('--input_training_file', default='LJSpeech-1.1/training.txt')
     parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
-    parser.add_argument('--checkpoint_path', default='cp_hifigan')
-    parser.add_argument('--config', default='')
+    parser.add_argument('--checkpoint_path', required=True) # default='cp_hifigan')
+    parser.add_argument('--config', required=True)
     parser.add_argument('--training_epochs', default=3100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--checkpoint_interval', default=5000, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=1000, type=int)
     parser.add_argument('--fine_tuning', default=False, type=bool)
+    parser.add_argument('--logging_dir', default=None, 
+                        help="tensorboard logging dir defaults to checkpoint_path/logs")
 
     a = parser.parse_args()
 
